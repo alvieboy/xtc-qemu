@@ -260,7 +260,7 @@ void xtc_cpu_unassigned_access(CPUState *cs, hwaddr addr,
                               unsigned size)
 {
 
-    qemu_log("Unassigned " TARGET_FMT_plx " wr=%d exe=%d\n",
+    cpu_abort(CPU(cs),"Unassigned " TARGET_FMT_plx " wr=%d exe=%d\n",
              addr, is_write ? 1 : 0, is_exec ? 1 : 0);
     if (cs == NULL) {
         return;
@@ -269,21 +269,29 @@ void xtc_cpu_unassigned_access(CPUState *cs, hwaddr addr,
 #endif
 #endif
 
-void helper_traceinsn(CPUXTCState *env, uint32_t pc, uint32_t opc, uint32_t a, uint32_t b)
+static FILE *tracefile = NULL;
+
+static void trace( uint32_t pc, uint32_t opc, uint32_t a, uint32_t b, bool executed )
 {
-    static FILE *trace = NULL;
-    if (trace==NULL) {
-        trace=fopen("trace.txt","w+");
+    if (tracefile==NULL) {
+        tracefile=fopen("trace.txt","w+");
     }
     if (opc&0x8000) {
-        fprintf(trace,"E 0x%08x 0x%08x 0x%08x 0x%08x\n", pc, opc,a,b);
-        qemu_log("Trace: PC 0x%08x, opc 0x%08x, LHS 0x%08x, RHS 0x%08x\n", pc, opc,a,b);
+        fprintf(tracefile,"%c 0x%08x 0x%08x 0x%08x 0x%08x\n", (executed?'E':' '),pc, opc,a,b);
+//        qemu_log("Trace: PC 0x%08x, opc 0x%08x, LHS 0x%08x, RHS 0x%08x\n", pc, opc,a,b);
     } else {
-        fprintf(trace,"E 0x%08x 0x%04x     0x%08x 0x%08x\n", pc, opc,a,b);
-        qemu_log("Trace: PC 0x%08x, opc 0x%04x, LHS 0x%08x, RHS 0x%08x\n", pc, opc,a,b);
+        fprintf(tracefile,"%c 0x%08x 0x%04x     0x%08x 0x%08x\n", (executed?'E':' '), pc, opc,a,b);
+//        qemu_log("Trace: PC 0x%08x, opc 0x%04x, LHS 0x%08x, RHS 0x%08x\n", pc, opc,a,b);
     }
-    fflush(trace);
+    //fflush(tracefile);
+
 }
+
+void helper_traceinsn(uint32_t pc, uint32_t opc, uint32_t a, uint32_t b)
+{
+    trace(pc,opc,a,b,true);
+}
+
 
 void helper_tracecompare(CPUXTCState *env, uint32_t a, uint32_t b, uint32_t r)
 {
@@ -298,12 +306,16 @@ void helper_branchtaken(CPUXTCState *env, uint32_t target)
 
 void helper_memoryread(CPUXTCState *env, uint32_t a, uint32_t d)
 {
-    qemu_log("Memory Read 0x%08x -> 0x%08x\n",a,d);
+    if (tracefile) {
+        fprintf(tracefile,"# Memory Read 0x%08x -> 0x%08x\n",a,d);
+    }
 }
 
 void helper_memorywrite(CPUXTCState *env, uint32_t a, uint32_t d)
 {
-    qemu_log("Memory Write 0x%08x <- 0x%08x\n",a,d);
+    if (tracefile) {
+        fprintf(tracefile,"# Memory Write 0x%08x <- 0x%08x\n",a,d);
+    }
 }
 
 uint32_t helper_readpsr(CPUXTCState *env)

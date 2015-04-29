@@ -42,6 +42,9 @@
 #define EXTRACT_FIELD(src, start, end) \
             (((src) >> start) & ((1 << (end - start + 1)) - 1))
 
+#define TRACE_INSN
+#define TRACE_MEMORY
+
 static TCGv env_debug;
 static TCGv_ptr cpu_env;
 static TCGv cpu_R[32];
@@ -69,7 +72,7 @@ typedef struct DisasContext {
     uint32_t imm24;
     uint32_t imm;
     uint8_t imm8;
-    int cc;
+    int cc, savecc;
 
     int rhs_immediate;
     int is_extended;
@@ -107,7 +110,7 @@ static const char *special_regnames[] =
     "y", "psr", "spsr", "pc"
 };
 
-static int xtc_get_condition(DisasContext*dc);
+static int xtc_get_condition(DisasContext*dc, int cc);
 
 static inline void t_sync_flags(DisasContext *dc)
 {
@@ -179,7 +182,7 @@ static void dec_add(DisasContext *dc)
 {
     RETURN_IF_TARGET_ZERO(dc);
     if (dc->rhs_immediate) {
-        tcg_gen_addi_tl(cpu_R[dc->rd], cpu_R[dc->ra], dc->imm);
+        tcg_gen_addi_tl(cpu_R[dc->rd], cpu_R[dc->rb], dc->imm);
     } else {
         tcg_gen_add_tl(cpu_R[dc->rd], cpu_R[dc->ra], cpu_R[dc->rb]);
     }
@@ -215,7 +218,7 @@ static void dec_sub(DisasContext *dc)
 {
     RETURN_IF_TARGET_ZERO(dc);
     if (dc->rhs_immediate) {
-        tcg_gen_subi_tl(cpu_R[dc->rd], cpu_R[dc->ra], dc->imm);
+        tcg_gen_subi_tl(cpu_R[dc->rd], cpu_R[dc->rb], dc->imm);
     } else {
         tcg_gen_sub_tl(cpu_R[dc->rd], cpu_R[dc->ra], cpu_R[dc->rb]);
     }
@@ -225,7 +228,7 @@ static void dec_and(DisasContext *dc)
 {
     RETURN_IF_TARGET_ZERO(dc);
     if (dc->rhs_immediate) {
-        tcg_gen_andi_tl(cpu_R[dc->rd], cpu_R[dc->ra], dc->imm);
+        tcg_gen_andi_tl(cpu_R[dc->rd], cpu_R[dc->rb], dc->imm);
     } else
         tcg_gen_and_tl(cpu_R[dc->rd], cpu_R[dc->ra], cpu_R[dc->rb]);
 }
@@ -234,7 +237,7 @@ static void dec_or(DisasContext *dc)
 {
     RETURN_IF_TARGET_ZERO(dc);
     if (dc->rhs_immediate) {
-        tcg_gen_ori_tl(cpu_R[dc->rd], cpu_R[dc->ra], dc->imm);
+        tcg_gen_ori_tl(cpu_R[dc->rd], cpu_R[dc->rb], dc->imm);
     } else
         tcg_gen_or_tl(cpu_R[dc->rd], cpu_R[dc->ra], cpu_R[dc->rb]);
 }
@@ -243,7 +246,7 @@ static void dec_xor(DisasContext *dc)
 {
     RETURN_IF_TARGET_ZERO(dc);
     if (dc->rhs_immediate) {
-        tcg_gen_xori_tl(cpu_R[dc->rd], cpu_R[dc->ra], dc->imm);
+        tcg_gen_xori_tl(cpu_R[dc->rd], cpu_R[dc->rb], dc->imm);
     } else
         tcg_gen_xor_tl(cpu_R[dc->rd], cpu_R[dc->ra], cpu_R[dc->rb]);
 }
@@ -309,12 +312,15 @@ static void t_gen_mulu(TCGv d, TCGv d2, TCGv a, TCGv b)
 /* Multiplier unit.  */
 static void dec_mul(DisasContext *dc)
 {
-    abort();
+    RETURN_IF_TARGET_ZERO(dc);
+    if (dc->rhs_immediate) {
+        tcg_gen_muli_tl(cpu_R[dc->rd], cpu_R[dc->rb], dc->imm);
+    } else
+        tcg_gen_mul_tl(cpu_R[dc->rd], cpu_R[dc->ra], cpu_R[dc->rb]);
 }
 
 static void dec_sra(DisasContext *dc)
 {
-    abort();
     RETURN_IF_TARGET_ZERO(dc);
     if (dc->rhs_immediate) {
         tcg_gen_sari_tl(cpu_R[dc->rd], cpu_R[dc->rb], dc->imm);
@@ -368,11 +374,15 @@ static void xtc_load(DisasContext *dc, TCGMemOp mop)
         TCGv t0 = tcg_temp_new();
         tcg_gen_addi_tl( t0, cpu_R[dc->rd], dc->imm );
         tcg_gen_qemu_ld_tl(cpu_R[dc->rb], t0, 0, mop);
+#ifdef TRACE_MEMORY
         gen_helper_memoryread( cpu_env, t0, cpu_R[dc->rb]);
+#endif
         tcg_temp_free(t0);
     } else {
         tcg_gen_qemu_ld_tl(cpu_R[dc->rb], cpu_R[dc->rd], 0, mop);
+#ifdef TRACE_MEMORY
         gen_helper_memoryread( cpu_env, cpu_R[dc->rd], cpu_R[dc->rb]);
+#endif
     }
 }
 
@@ -399,9 +409,13 @@ static void xtc_store(DisasContext *dc, TCGMemOp mop)
     if (dc->imm) {
         tcg_gen_addi_tl( t0, cpu_R[dc->rd], dc->imm );
         tcg_gen_qemu_st_tl(cpu_R[dc->rb], t0, 0, mop);
+#ifdef TRACE_MEMORY
         gen_helper_memorywrite( cpu_env, t0, cpu_R[dc->rb]);
+#endif
     } else {
+#ifdef TRACE_MEMORY
         gen_helper_memorywrite( cpu_env, cpu_R[dc->rd], cpu_R[dc->rb]);
+#endif
         tcg_gen_qemu_st_tl(cpu_R[dc->rb], cpu_R[dc->rd], 0, mop);
     }
     tcg_temp_free(t0);
@@ -522,6 +536,8 @@ static void dec_br(DisasContext *dc)
     dc->delayed_branch = 2;
     dc->tb_flags |= D_FLAG;
     dc->conditional_branch = 0;
+    int cc = CC_NONE;
+
     xtc_loadimm8(dc);
 
     int32_t offset = (int32_t)dc->imm; /* sign-extend.  */
@@ -530,16 +546,28 @@ static void dec_br(DisasContext *dc)
     dc->jmp = JMP_REL;
     dc->jmp_pc = dc->pc + offset + 2;
 
-    if (dc->is_extended)
+    cc = dc->cc;
+
+    if (dc->is_extended) {
         dc->jmp_pc+=2;
+    } else {
+        if (dc->tb_flags & IMM_FLAG) {
+            /* Check CC from previous imm */
+            qemu_log("@PC 0x%08x: Using previous insn condition code of %d\n", dc->pc, dc->savecc);
+            cc = dc->savecc;
+        }
+    }
+
+
     qemu_log("@PC 0x%08x: Target PC will be 0x%08x, offset 0x%08x\n", dc->pc, dc->jmp_pc,
-            offset);
-    if (dc->cc) {
+             offset);
+
+    if (cc) {
         /* Need to eval CC right away. */
         dc->conditional_branch = 1;
-        tcg_gen_setcond_tl( xtc_get_condition(dc), env_btaken, cpu_cc_src, cpu_cc_src2);
+        tcg_gen_setcond_tl( xtc_get_condition(dc,cc), env_btaken, cpu_cc_src, cpu_cc_src2);
         gen_helper_tracecompare( cpu_env, cpu_cc_src, cpu_cc_src2, env_btaken );
-        tcg_gen_movi_tl( env_btarget, dc->jmp_pc + (dc->is_extended ? 6 : 4));
+        tcg_gen_movi_tl( env_btarget, dc->jmp_pc);
     }
     if ((dc->rd%16)!=0)
         tcg_gen_movi_tl( cpu_R[dc->rd], dc->pc + (dc->is_extended ? 6 : 4));
@@ -564,7 +592,7 @@ static void dec_jmp(DisasContext *dc)
     if (dc->cc) {
         /* Need to eval CC right away. */
         dc->conditional_branch = 1;
-        tcg_gen_setcond_tl( xtc_get_condition(dc), env_btaken, cpu_cc_src, cpu_cc_src2);
+        tcg_gen_setcond_tl( xtc_get_condition(dc,dc->cc), env_btaken, cpu_cc_src, cpu_cc_src2);
         gen_helper_tracecompare( cpu_env, cpu_cc_src, cpu_cc_src2, env_btaken );
 
     } else {
@@ -578,14 +606,19 @@ static void dec_jmp(DisasContext *dc)
 
 static void dec_null(DisasContext *dc)
 {
-    cpu_abort(CPU(dc->cpu),"unknown insn pc=%x opc=%x\n", dc->pc, dc->opcode);
+    cpu_abort(CPU(dc->cpu),"unknown insn pc=0x%08x opc=0x08%x\n", dc->pc, dc->opcode);
     dc->abort_at_next_insn = 1;
 }
 
 static void dec_addr(DisasContext *dc)
 {
     RETURN_IF_TARGET_ZERO(dc);
-    tcg_gen_mov_tl( cpu_R[dc->rd], cpu_R[dc->rb] );
+
+    //if (dc->rhs_immediate) {
+    tcg_gen_addi_tl( cpu_R[dc->rd], cpu_R[dc->rb], dc->imm );
+    //} else {
+   //     tcg_gen_mov_tl( cpu_R[dc->rd], cpu_R[dc->rb] );
+   // }
 }
 
 static void dec_rspr(DisasContext *dc)
@@ -685,10 +718,10 @@ static struct decoder_info {
     {{0, 0}, dec_null}
 };
 
-static int xtc_get_condition(DisasContext*dc)
+static int xtc_get_condition(DisasContext*dc, int cc)
 {
     int r;
-    switch (dc->cc) {
+    switch (cc) {
     case CC_NONE:
         r = TCG_COND_ALWAYS;
         break;
@@ -723,10 +756,10 @@ static int xtc_get_condition(DisasContext*dc)
         r = TCG_COND_GTU;
         break;
     default:
-        cpu_abort(CPU(dc->cpu), "Unknown condition code %x.\n", dc->cc);
+        cpu_abort(CPU(dc->cpu), "Unknown condition code %x.\n", cc);
         break;
     }
-    qemu_log("Cond code: %d -> %d\n", dc->cc, r);
+    qemu_log("Cond code: %d -> %d\n", cc, r);
     return r;
 }
 
@@ -756,9 +789,11 @@ static inline void decode(DisasContext *dc, uint32_t ir)
         dc->imm24 += EXTRACT_FIELD(ir, 16, 23)<<15;
         dc->imm24 += EXTRACT_FIELD(ir, 28, 28)<<23;
         dc->cc    = EXTRACT_FIELD(ir, 24, 27);
+        dc->savecc = EXTRACT_FIELD(ir, 24, 27); // Saved for later.
         if (dc->isextdreg) {
             // Special D-REG
-            dc->rd = EXTRACT_FIELD(ir, 21, 25);
+            dc->rd = EXTRACT_FIELD(ir, 16, 19);
+            qemu_log("%08x: target dreg, reg %d, opc %08x\n",dc->pc, dc->rd, ir);
         };
         if (dc->isextimm) {
             // Extended immediate.
@@ -784,26 +819,41 @@ static inline void decode(DisasContext *dc, uint32_t ir)
         /* Conditional insn.  */
 //        tcg_gen_brcond_tl( xtc_get_condition(dc), cpu_cc_src, cpu_cc_src2, l1);
     }
-    TCGv tpc = tcg_const_i32(dc->pc);
-    TCGv iir = tcg_const_i32(ir);
-    gen_helper_traceinsn( cpu_env, tpc, iir, cpu_R[dc->ra], cpu_R[dc->rb] );
-    tcg_temp_free_i32(tpc);
-    tcg_temp_free_i32(iir);
+
     /* Large switch for all insns.  */
+
     for (i = 0; i < ARRAY_SIZE(decinfo); i++) {
         if ((ir & decinfo[i].mask) == decinfo[i].bits) {
+            bool needLabel=false;
+            //TCGv executed = tcg_temp_new();
+
+            //tcg_gen_movi_tl( executed, 0);
 
             if ((dc->cc != CC_NONE) && !(decinfo[i].flags&OPCODE_FLAGS_NEEDEVAL)) {
                 l1 =  gen_new_label();
                 /* Conditional insn.  */
-                tcg_gen_brcond_tl( tcg_invert_cond(xtc_get_condition(dc)), cpu_cc_src, cpu_cc_src2, l1);
+                tcg_gen_brcond_tl( tcg_invert_cond(xtc_get_condition(dc,dc->cc)), cpu_cc_src, cpu_cc_src2, l1);
+                needLabel=true;
             }
+#ifdef TRACE_INSN
+            //tcg_gen_movi_tl( executed, 1);
+            TCGv tpc = tcg_const_i32(dc->pc);
+            TCGv iir = tcg_const_i32(ir);
 
+            gen_helper_traceinsn( tpc, iir, cpu_R[dc->ra], cpu_R[dc->rb] );
+
+            tcg_temp_free_i32(tpc);
+            tcg_temp_free_i32(iir);
+#endif
             decinfo[i].dec(dc);
             handled=1;
-            if ((dc->cc != CC_NONE) && !(decinfo[i].flags&OPCODE_FLAGS_NEEDEVAL)) {
+
+            if (needLabel) {
                 gen_set_label(l1);
             }
+
+            //tcg_temp_free(executed);
+
             break;
         }
     }
@@ -867,6 +917,7 @@ gen_intermediate_code_internal(XTCCPU *cpu, TranslationBlock *tb,
     dc->abort_at_next_insn = 0;
     dc->nr_nops = 0;
     dc->imm = 0; // ???
+    dc->delayed_branch = 0;
 
     if (pc_start & 1) {
         cpu_abort(cs, "XTC: unaligned PC=%x\n", pc_start);
@@ -964,11 +1015,10 @@ gen_intermediate_code_internal(XTCCPU *cpu, TranslationBlock *tb,
         //tcg_gen_movi_i32( cpu_R[0], 0);
         //tcg_gen_movi_i32( cpu_R[16], 0);
 
-        dc->pc += pcoffset;
-
         num_insns++;
 
         if (dc->delayed_branch) {
+            qemu_log("@PC 0x%08x: delayed branch %d\n", dc->pc,dc->delayed_branch);
             dc->delayed_branch--;
             if (dc->delayed_branch==0) {
                 dc->is_jmp=DISAS_UPDATE;
@@ -992,6 +1042,8 @@ gen_intermediate_code_internal(XTCCPU *cpu, TranslationBlock *tb,
                 }
             }
         }
+
+        dc->pc += pcoffset;
 
         if (cs->singlestep_enabled) {
             break;
@@ -1149,7 +1201,7 @@ void xtc_tcg_init(void)
     for (i = 0; i < ARRAY_SIZE(cpu_R); i++) {
         cpu_R[i] = tcg_global_mem_new(TCG_AREG0,
                                       offsetof(CPUXTCState, regs[i]),
-                                      regnames[i % 15]);
+                                      regnames[i % 16]);
     }
     for (i = 0; i < ARRAY_SIZE(cpu_SR); i++) {
         cpu_SR[i] = tcg_global_mem_new(TCG_AREG0,

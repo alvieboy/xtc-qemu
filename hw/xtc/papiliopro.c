@@ -54,7 +54,7 @@ static void ppro_init(MachineState *machine)
 //    DeviceState *dev, *dma, *eth0;
 //    Object *ds, *cs;
     XTCCPU *cpu;
-//    SysBusDevice *busdev;
+    SysBusDevice *busdev;
 //    DriveInfo *dinfo;
     //int i;
     MemoryRegion *phys_ram = g_new(MemoryRegion, 1);
@@ -87,6 +87,34 @@ static void ppro_init(MachineState *machine)
 
     sysbus_create_simple("xtc.uart", 0x90000000,
                          NULL);
+
+    {
+        SSIBus *spi;
+        DeviceState *dev;
+
+        dev = qdev_create(NULL, "xtc.spi");
+        qdev_init_nofail(dev);
+        busdev = SYS_BUS_DEVICE(dev);
+        sysbus_mmio_map(busdev, 0, 0xA0000000);
+
+        spi = (SSIBus *)qdev_get_child_bus(dev, "spi");
+
+        qemu_irq cs_line;
+
+        dev = ssi_create_slave(spi, "m25p128");
+        cs_line = qdev_get_gpio_in_named(dev, SSI_GPIO_CS, 0);
+        sysbus_connect_irq(busdev, 1, cs_line);
+    }
+
+    {
+        DeviceState *dev;
+
+        dev = qdev_create(NULL, "xtc.spi");
+        qdev_init_nofail(dev);
+        busdev = SYS_BUS_DEVICE(dev);
+        sysbus_mmio_map(busdev, 0, 0xB0000000);
+
+    }
 
 
     machine_cpu_reset(cpu);
