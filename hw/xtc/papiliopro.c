@@ -113,6 +113,13 @@ static void ppro_init(MachineState *machine)
         qdev_init_nofail(dev);
         busdev = SYS_BUS_DEVICE(dev);
         sysbus_mmio_map(busdev, 0, 0xB0000000);
+        SSIBus *spi;
+        spi = (SSIBus *)qdev_get_child_bus(dev, "spi");
+
+        qemu_irq cs_line;
+        dev = ssi_create_slave(spi, "ssi-sd");
+        cs_line = qdev_get_gpio_in_named(dev, SSI_GPIO_CS, 0);
+        sysbus_connect_irq(busdev, 1, cs_line);
 
     }
 
