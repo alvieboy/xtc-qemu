@@ -24,12 +24,13 @@
 
 #include "hw/sysbus.h"
 #include "sysemu/char.h"
+#include <sys/time.h>
 
 #define TYPE_XTC_UART "xtc.uart"
 #define XTC_UART(obj) \
     OBJECT_CHECK(XTCUART, (obj), TYPE_XTC_UART)
 
-#define R_MAX 2
+#define R_MAX 4
 
 typedef struct XTCUART {
     SysBusDevice parent_obj;
@@ -72,6 +73,19 @@ static void xtc_uart_reset(DeviceState *dev)
     uart_update_status(XTC_UART(dev));
 }
 
+static uint64_t gettime(void)
+{
+    static uint64_t start = 0;
+    struct timeval tv;
+    gettimeofday(&tv,NULL);
+    uint64_t r = (tv.tv_sec * 1000) + (tv.tv_usec/1000);
+    if (start==0) {
+        start=r;
+        return 0;
+    }
+    return r - start;
+}
+
 static uint64_t
 uart_read(void *opaque, hwaddr addr, unsigned int size)
 {
@@ -80,20 +94,24 @@ uart_read(void *opaque, hwaddr addr, unsigned int size)
     addr >>= 2;
     switch (addr)
     {
-        case 0:
-            r = s->rx_fifo[(s->rx_fifo_pos - s->rx_fifo_len) & 7];
-            if (s->rx_fifo_len)
-                s->rx_fifo_len--;
-            uart_update_status(s);
-            uart_update_irq(s);
-            qemu_chr_accept_input(s->chr);
-            break;
+    case 0:
+        r = s->rx_fifo[(s->rx_fifo_pos - s->rx_fifo_len) & 7];
+        if (s->rx_fifo_len)
+            s->rx_fifo_len--;
+        uart_update_status(s);
+        uart_update_irq(s);
+        qemu_chr_accept_input(s->chr);
+        break;
+    case 2:
+    case 3:
+        r =  gettime();
 
-        default:
-            if (addr < ARRAY_SIZE(s->regs))
-                r = s->regs[addr];
-            qemu_log("%s addr=%lx v=%x\n", __func__, addr, r);
-            break;
+        break;
+    default:
+        if (addr < ARRAY_SIZE(s->regs))
+            r = s->regs[addr];
+        qemu_log("%s addr=%lx v=%x\n", __func__, addr, r);
+        break;
     }
     return r;
 }
