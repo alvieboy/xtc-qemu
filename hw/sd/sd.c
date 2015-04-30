@@ -1194,6 +1194,15 @@ static sd_rsp_type_t sd_normal_command(SDState *sd,
         }
         break;
 
+    case 58:	/* CMD58:   READ_OCR */
+        switch (sd->state) {
+        case sd_idle_state:
+            return sd->spi ? sd_r3 : sd_r0;
+        default:
+            break;
+        }
+        break;
+
     default:
     bad_cmd:
         fprintf(stderr, "SD: Unknown CMD%i\n", req.cmd);

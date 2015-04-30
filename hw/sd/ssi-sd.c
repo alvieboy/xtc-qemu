@@ -104,6 +104,11 @@ static uint32_t ssi_sd_transfer(SSISlave *dev, uint32_t val)
                 /* CMD58 returns R3 response (OCR)  */
                 DPRINTF("Returned OCR\n");
                 s->arglen = 5;
+                s->response[0] = 0; /* TODO: check this? I see 0 being validated in all SD libs */
+                memcpy(&s->response[1], longresp, 4);
+            } else if (s->cmd == 8) {
+                /* CMD08 returns VRS  */
+                s->arglen = 5;
                 s->response[0] = 1;
                 memcpy(&s->response[1], longresp, 4);
             } else if (s->arglen != 4) {
