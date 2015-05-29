@@ -271,6 +271,8 @@ void xtc_cpu_unassigned_access(CPUState *cs, hwaddr addr,
 
 static FILE *tracefile = NULL;
 
+#ifdef XTC_TRACETOFILE
+
 static void trace( uint32_t pc, uint32_t opc, uint32_t a, uint32_t b, bool executed )
 {
     if (tracefile==NULL) {
@@ -286,6 +288,75 @@ static void trace( uint32_t pc, uint32_t opc, uint32_t a, uint32_t b, bool execu
     //fflush(tracefile);
 
 }
+#else
+
+#define TRACEBUFFERSIZE 8192
+
+typedef struct {
+    uint32_t pc;
+    uint32_t opc;
+    uint32_t a;
+    uint32_t b;
+} tracebuffer_entry_t;
+
+static tracebuffer_entry_t *tracebuffer = NULL;
+static int tracebufferpos = 0;
+
+static void trace( uint32_t pc, uint32_t opc, uint32_t a, uint32_t b, bool executed )
+{
+    if (tracebuffer==NULL) {
+        tracebuffer = g_new(tracebuffer_entry_t, TRACEBUFFERSIZE);
+        tracebufferpos=0;
+    }
+    tracebuffer[tracebufferpos].pc = pc;
+    tracebuffer[tracebufferpos].opc = opc;
+    tracebuffer[tracebufferpos].a = a;
+    tracebuffer[tracebufferpos].b = b;
+    tracebufferpos++;
+    tracebufferpos &= (TRACEBUFFERSIZE-1);
+
+}
+
+void dumptrace(void)
+{
+    int p;
+    printf("trace pos: %d\n", tracebufferpos);
+
+    if (tracefile==NULL) {
+        tracefile=fopen("trace.txt","w+");
+    }
+    tracebufferpos++;
+    if (tracebufferpos==TRACEBUFFERSIZE)
+        tracebufferpos=0;
+
+    for (p=0;p<TRACEBUFFERSIZE;p++) {
+        tracebuffer_entry_t *e = &tracebuffer[tracebufferpos];
+
+        if (e->opc&0x8000) {
+            fprintf(tracefile,"E 0x%08x 0x%08x 0x%08x 0x%08x\n", e->pc, e->opc,e->a,e->b);
+        } else {
+            fprintf(tracefile,"E 0x%08x 0x%04x     0x%08x 0x%08x\n", e->pc, e->opc,e->a,e->b);
+        }
+        tracebufferpos++;
+        if (tracebufferpos==TRACEBUFFERSIZE)
+            tracebufferpos=0;
+
+    }
+    fclose(tracefile);
+    tracefile=NULL;
+#if 0
+    if (opc&0x8000) {
+        fprintf(tracefile,"%c 0x%08x 0x%08x 0x%08x 0x%08x\n", (executed?'E':' '),pc, opc,a,b);
+    } else {
+        fprintf(tracefile,"%c 0x%08x 0x%04x     0x%08x 0x%08x\n", (executed?'E':' '), pc, opc,a,b);
+    }
+#endif
+}
+
+
+
+#endif
+
 
 void helper_traceinsn(uint32_t pc, uint32_t opc, uint32_t a, uint32_t b)
 {
@@ -301,20 +372,29 @@ void helper_tracecompare(CPUXTCState *env, uint32_t a, uint32_t b, uint32_t r)
 
 void helper_branchtaken(CPUXTCState *env, uint32_t target)
 {
-    qemu_log("Branch taken -> 0x%08x\n",target);
+    printf("Branch taken -> 0x%08x\n",target);
 }
 
-void helper_memoryread(CPUXTCState *env, uint32_t a, uint32_t d)
+void helper_memoryread(uint32_t a, uint32_t d, uint32_t mode, uint32_t pc)
 {
-    if (tracefile) {
+/*    if (tracefile) {
         fprintf(tracefile,"# Memory Read 0x%08x -> 0x%08x\n",a,d);
-    }
+        }
+        */
 }
 
-void helper_memorywrite(CPUXTCState *env, uint32_t a, uint32_t d)
+void helper_memorywrite(uint32_t a, uint32_t d, uint32_t mode, uint32_t pc)
 {
-    if (tracefile) {
+/*    if (tracefile) {
         fprintf(tracefile,"# Memory Write 0x%08x <- 0x%08x\n",a,d);
+        }
+        */
+    if (a<0x1000) {
+        fprintf(stderr,"NOTE: low memory write, pc 0x%08x, address 0x%08x, data 0x%08x, mode %d\n",pc,a,d,mode);
+        if (pc==0x00018860) {
+            dumptrace();
+            abort();
+        }
     }
 }
 
@@ -350,3 +430,19 @@ void helper_writecop(CPUXTCState *env, uint32_t index, uint32_t reg, uint32_t va
         break;
     }
 }
+
+uint32_t helper_computecarry(uint32_t lhs, uint32_t rhs, uint32_t op)
+{
+//    printf("Compute carry: lhs %lx rhs %lx :",(uint64_t)lhs , (uint64_t)rhs);
+    uint32_t cout = 0;
+#if 1
+    if ((~0 - lhs) < (rhs))
+        cout = 1;
+#else
+    uint64_t r = (uint64_t)lhs + (uint64_t)rhs;
+    cout = !!(r&(1ULL<<32));
+#endif
+  //  printf("%d\n",cout);
+    return cout;
+}
+

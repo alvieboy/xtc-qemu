@@ -89,7 +89,7 @@ struct CPUXTCState {
     uint32_t debug;
     uint32_t btaken;
     uint32_t btarget;
-    uint32_t bimm;
+    //uint32_t bimm;
 
     uint32_t imm;
     uint32_t regs[32];
@@ -194,6 +194,8 @@ void xtc_cpu_unassigned_access(CPUState *cpu, hwaddr addr,
                               bool is_write, bool is_exec, int is_asi,
                               unsigned size);
 #endif
+
+void dumptrace(void);
 
 #include "exec/exec-all.h"
 

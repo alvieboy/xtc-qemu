@@ -22,7 +22,9 @@
 #include "qemu-common.h"
 #include "hw/qdev-properties.h"
 #include "migration/vmstate.h"
-
+#include "monitor/monitor.h"
+#include "sysemu/sysemu.h"
+#include "trace.h"
 
 static void xtc_cpu_set_pc(CPUState *cs, vaddr value)
 {
@@ -53,7 +55,6 @@ static void xtc_cpu_reset(CPUState *s)
     XTCCPU *cpu = XTC_CPU(s);
     XTCCPUClass *mcc = XTC_CPU_GET_CLASS(cpu);
     CPUXTCState *env = &cpu->env;
-
     mcc->parent_reset(s);
 
     memset(env, 0, sizeof(CPUXTCState));
@@ -100,6 +101,13 @@ static void xtc_cpu_reset(CPUState *s)
 #endif
 }
 
+static Notifier xtc_exit_notifier;
+
+static void xtc_handle_exit(struct Notifier *n, void *data)
+{
+    dumptrace();
+}
+
 static void xtc_cpu_realizefn(DeviceState *dev, Error **errp)
 {
     CPUState *cs = CPU(dev);
@@ -109,7 +117,10 @@ static void xtc_cpu_realizefn(DeviceState *dev, Error **errp)
     qemu_init_vcpu(cs);
 
     mcc->parent_realize(dev, errp);
-}
+
+    xtc_exit_notifier.notify = xtc_handle_exit;
+    qemu_add_exit_notifier(&xtc_exit_notifier);
+}   
 
 static void xtc_cpu_initfn(Object *obj)
 {
@@ -125,7 +136,17 @@ static void xtc_cpu_initfn(Object *obj)
         tcg_initialized = true;
         xtc_tcg_init();
     }
+
+    
 }
+
+
+#if 0
+static void xtc_cpu_exit(CPUState *cpu)
+{
+    dumptrace();
+}
+#endif
 
 static const VMStateDescription vmstate_xtc_cpu = {
     .name = "cpu",
@@ -164,6 +185,7 @@ static void xtc_cpu_class_init(ObjectClass *oc, void *data)
 #if 0
     cc->get_phys_page_debug = xtc_cpu_get_phys_page_debug;
 #endif
+    //cc->cpu_exec_exit = xtc_cpu_exit;
     dc->vmsd = &vmstate_xtc_cpu;
     dc->props = xtc_properties;
     cc->gdb_num_core_regs = 32 + 5;
@@ -175,7 +197,7 @@ static const TypeInfo xtc_cpu_type_info = {
     .instance_size = sizeof(XTCCPU),
     .instance_init = xtc_cpu_initfn,
     .class_size = sizeof(XTCCPUClass),
-    .class_init = xtc_cpu_class_init,
+    .class_init = xtc_cpu_class_init
 };
 
 static void xtc_cpu_register_types(void)
