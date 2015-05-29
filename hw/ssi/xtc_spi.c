@@ -25,9 +25,10 @@
 #include "hw/sysbus.h"
 #include "sysemu/sysemu.h"
 #include "qemu/log.h"
-//#include "qemu/fifo8.h"
-
 #include "hw/ssi.h"
+
+
+
 //#define XTC_SPI_ERR_DEBUG
 
 #ifdef XTC_SPI_ERR_DEBUG
