@@ -1195,6 +1195,8 @@ static sd_rsp_type_t sd_normal_command(SDState *sd,
         break;
 
     case 58:	/* CMD58:   READ_OCR */
+        return sd->spi ? sd_r3 : sd_r0;
+
         switch (sd->state) {
         case sd_idle_state:
             return sd->spi ? sd_r3 : sd_r0;
@@ -1771,4 +1773,14 @@ bool sd_data_ready(SDState *sd)
 void sd_enable(SDState *sd, bool enable)
 {
     sd->enable = enable;
+}
+
+void sd_spi_deselected(SDState *sd)
+{
+#if 0
+    if (sd->spi) {
+        if (sd->state == sd_sendingdata_state)
+        sd->state = sd_transfer_state;
+    }
+#endif
 }
