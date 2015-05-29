@@ -34,6 +34,7 @@ typedef enum {
     SSI_SD_RESPONSE,
     SSI_SD_DATA_START,
     SSI_SD_DATA_READ,
+    SSI_SD_DATA_CRC
 } ssi_sd_mode;
 
 typedef struct {
@@ -44,6 +45,7 @@ typedef struct {
     uint8_t response[5];
     int arglen;
     int response_pos;
+    int count;
     int stopping;
     SDState *sd;
 } ssi_sd_state;
@@ -70,10 +72,13 @@ static uint32_t ssi_sd_transfer(SSISlave *dev, uint32_t val)
     ssi_sd_state *s = FROM_SSI_SLAVE(ssi_sd_state, dev);
 
     /* Special case: allow CMD12 (STOP TRANSMISSION) while reading data.  */
-    if (s->mode == SSI_SD_DATA_READ && val == 0x4d) {
+    if (((s->mode == SSI_SD_DATA_READ) ||
+         (s->mode == SSI_SD_DATA_CRC) ||
+         (s->mode == SSI_SD_DATA_START) ) && val == 0x4c) {
         s->mode = SSI_SD_CMD;
         /* There must be at least one byte delay before the card responds.  */
         s->stopping = 1;
+        DPRINTF("Command 12 received\n");
     }
 
     switch (s->mode) {
@@ -179,6 +184,7 @@ static uint32_t ssi_sd_transfer(SSISlave *dev, uint32_t val)
         }
         if (sd_data_ready(s->sd)) {
             DPRINTF("Data read\n");
+            s->count = 512; // FIXME
             s->mode = SSI_SD_DATA_START;
         } else {
             DPRINTF("End of command\n");
@@ -187,14 +193,55 @@ static uint32_t ssi_sd_transfer(SSISlave *dev, uint32_t val)
         return 0xff;
     case SSI_SD_DATA_START:
         DPRINTF("Start read block\n");
-        s->mode = SSI_SD_DATA_READ;
+        if (val!=0xff) {
+            DPRINTF("Command %02x while start read block, stopping %d\n", val&0x3f,
+                   s->stopping);
+        }
+        if (!s->stopping) {
+            s->mode = SSI_SD_DATA_READ;
+        }
         return 0xfe;
     case SSI_SD_DATA_READ:
-        val = sd_read_data(s->sd);
-        if (!sd_data_ready(s->sd)) {
-            DPRINTF("Data read end\n");
-            s->mode = SSI_SD_CMD;
+
+        if (val!=0xff) {
+            DPRINTF("Command %02x while sending data\n", val&0x3f);
+            s->cmd = val & 0x3f;
         }
+
+        val = sd_read_data(s->sd);
+        s->count--;
+        if (s->count==0) {
+            DPRINTF("Data read end\n");
+            s->mode = SSI_SD_DATA_CRC;
+
+            s->response_pos = 0;
+            /* TODO: setup proper data CRC here */
+            s->response[0] = 0x00;
+            s->response[1] = 0x00;
+        }
+        return val;
+
+    case SSI_SD_DATA_CRC:
+        if (val!=0xff) {
+            DPRINTF("Command %02x while sending CRC\n", val&0x3f);
+            s->cmd = val & 0x3f;
+        }
+
+
+        val = s->response[s->response_pos];
+
+        DPRINTF("Sendind CRC byte %d\n", s->response_pos);
+
+        if (s->response_pos==1) {
+            if (sd_data_ready(s->sd)) {
+                s->count = 512; // FIXME
+                s->mode = SSI_SD_DATA_START;
+            } else {
+                s->mode = SSI_SD_CMD;
+            }
+        }
+        s->response_pos++;
+
         return val;
     }
     /* Should never happen.  */
@@ -270,6 +317,19 @@ static int ssi_sd_init(SSISlave *d)
     return 0;
 }
 
+static int ssi_sd_set_cs(SSISlave *d, bool select)
+{
+    ssi_sd_state *s = FROM_SSI_SLAVE(ssi_sd_state, d);
+    if (!select) {
+        s->mode = SSI_SD_CMD;
+        sd_spi_deselected(s->sd);
+    }
+    DPRINTF("set cs: %s\n", select? "TRUE":"FALSE");
+    return 0;
+}
+
+
+
 static void ssi_sd_class_init(ObjectClass *klass, void *data)
 {
     SSISlaveClass *k = SSI_SLAVE_CLASS(klass);
@@ -277,6 +337,7 @@ static void ssi_sd_class_init(ObjectClass *klass, void *data)
     k->init = ssi_sd_init;
     k->transfer = ssi_sd_transfer;
     k->cs_polarity = SSI_CS_LOW;
+    k->set_cs = ssi_sd_set_cs;
 }
 
 static const TypeInfo ssi_sd_info = {
