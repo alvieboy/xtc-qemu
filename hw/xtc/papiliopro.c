@@ -36,7 +36,7 @@
 #include "hw/stream.h"
 #include "xtc_rom.h"
 
-#define RAM_SIZE_MB 4
+#define RAM_SIZE_MB 8
 #define MEMORY_BASEADDR 0x0
 #define ROM_BASEADDR 0x40000000
 
@@ -46,6 +46,8 @@ static void machine_cpu_reset(XTCCPU *cpu)
     cpu_reset(CPU(cpu));
 }
 
+
+extern int xtcvgaidx_setmemoryregion(SysBusDevice *sbd, MemoryRegion*m);
 
 static void ppro_init(MachineState *machine)
 {
@@ -85,8 +87,15 @@ static void ppro_init(MachineState *machine)
     memory_region_add_subregion(address_space_mem, ROM_BASEADDR, phys_rom);
     memory_region_set_readonly(phys_rom, TRUE);
 
-    sysbus_create_simple("xtc.uart", 0x90000000,
-                         NULL);
+    sysbus_create_simple("xtc.uart", 0x90000000, NULL);
+    {
+        DeviceState *dev = qdev_create(NULL, "xtc.vgaidx");
+        qdev_init_nofail(dev);
+        busdev = SYS_BUS_DEVICE(dev);
+        sysbus_mmio_map(busdev, 0, 0xC0000000);
+        xtcvgaidx_setmemoryregion(busdev, phys_ram);
+
+    }
 
     {
         SSIBus *spi;
